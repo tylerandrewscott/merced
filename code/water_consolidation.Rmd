@@ -1,0 +1,214 @@
+---
+title: "PLACEHOLDER: Socio-economic homophily drives local government consolidation choices: why economic incentives aren't always enough"
+output: html_notebook
+bibliography: input/paperpile_export_7_2021.bibtex
+link-citations: true
+csl: chicago-author-date-tscott-feb2021.csl
+---
+
+
+```{r, include = F}
+#package management
+packages = c('tidyverse','sf','devtools','jsonlite','data.table','readxl','openxlsx','stringr','nngeo','statnet','lwgeom','deldir','spdep')
+need = packages[!packages %in% installed.packages()[,'Package']]
+if(!identical(need,character(0))){lapply(need,install.packages())}
+plyr::l_ply(packages,require,character.only = TRUE)
+```
+
+```{r, include = F}
+#this code reads in all the data and sets up basic working parts
+#epa sdwis records (use these as master records since they predate consolidation and CA water board data)
+#at some point, figure out api query to pull directly from sdwis
+sdwis = fread('input/water_system_sdwis_detail_CA_q2_2020.csv')
+#sdwis <- sdwis[`PWS Type`!='Transient non-community system',]
+setnames(sdwis,"PWS ID",'PWSID')
+### consolidation data
+consol_url = 'https://gispublic.waterboards.ca.gov/portalserver/rest/services/Hosted/Consolidations_and_Partnerships_since_2016/FeatureServer/0/query?f=json&where=1%3D1&returnGeometry=false&outFields=regulating_agency%2Ccounty%2Csystem_id%2Csystem_name%2Csystem_type%2Cconnections%2Cpopulation%2Cactivity_date%2Creceiving_system_id%2Cviolations_or_issues%2Cfunding_source%2Cnotes%2Cweblink%2Cpartnership_type%2Cobjectid'
+consol_json = fromJSON(consol_url)
+consol_dt = data.table(consol_json$features)
+names(consol_dt) <- str_remove(names(consol_dt),'^attributes\\.')
+#remove leading/trailng zeros (not sure why these are there)
+consol_dt$system_id <- str_remove_all(consol_dt$system_id ,'\\s')
+setnames(consol_dt,'system_id','PWSID')
+
+### risk assessment
+risk_url =  'https://www.waterboards.ca.gov/drinking_water/certlic/drinkingwater/docs/a1.xlsx'
+risk_sheet_name = 'Risk Assessment Results Summary'
+risk_df = openxlsx::read.xlsx(risk_url,risk_sheet_name)
+risk_dt = data.table(risk_df)
+
+### systems
+systems_query = fromJSON('https://gispublic.waterboards.ca.gov/portalserver/rest/services/Drinking_Water/California_Drinking_Water_System_Area_Boundaries/FeatureServer/0/query?f=json&where=1%3D1&returnGeometry=false&spatialRel=esriSpatialRelIntersects&outFields=*&orderByFields=OBJECTID_1%20ASC&resultOffset=0')
+systems_dt = data.table(systems_query$features)
+names(systems_dt) <- str_remove(names(systems_dt),'^attributes\\.')
+setnames(systems_dt,'SABL_PWSID','PWSID')
+systems_dt = systems_dt[!duplicated(PWSID),]
+#### THIS IS A VERY ROUGH MERGE #####
+####ONLY SYSTEM IDS ARE STANDARDIZED###### 
+##### THIS MUST BE CLEANED UP ######
+
+temp1 = merge(sdwis,systems_dt,all=T)
+temp2 = merge(temp1,risk_dt,all = T)
+temp3 = merge(temp2,consol_dt,all = T)
+master_system = temp3
+
+
+library(lubridate)
+master_system$DEACTIVATION <- dmy(master_system$`Deactivation Date`)
+master_system = master_system[is.na(DEACTIVATION)|DEACTIVATION>mdy('12/31/2015'),]
+```
+
+
+```{r, include = F}
+### gis features
+boundaries_geo_json_query = 'https://opendata.arcgis.com/datasets/fbba842bf134497c9d611ad506ec48cc_0.geojson'
+bounds_sf = st_read(boundaries_geo_json_query)
+valid_check = st_is_valid(bounds_sf)
+if(any(!valid_check)){
+bounds_sf$geometry[!valid_check] = lwgeom_make_valid(bounds_sf$geometry[!valid_check])
+}
+consol_geo_url = 'https://gispublic.waterboards.ca.gov/portalserver/rest/services/Hosted/Consolidations_and_Partnerships_since_2016/FeatureServer/0/query?f=json&where=1%3D1&returnGeometry=true&outFields=system_id%2Cpartnership_type%2Cobjectid'
+consol_geo = st_read(consol_geo_url)
+consol_geo$system_id <- str_remove_all(consol_geo$system_id,'\\s')
+
+#### THIS IS JANKY  #####
+#### FOR NOW ALL THIS CODE DOES IS TAKE CENTROIDS AND MEASURE DISTANCE ACCORDING TO CENTROIDS #####
+
+consol_centroids = st_centroid(x = consol_geo)[c("geometry",'system_id')]
+system_centroids = st_centroid(x = bounds_sf)[c("geometry",'SABL_PWSID')]
+system_centroids <- system_centroids[!system_centroids$SABL_PWSID %in% consol_centroids$system_id,]
+setnames(system_centroids,'SABL_PWSID','PWSID')
+setnames(consol_centroids,'system_id','PWSID')
+
+all_centroids = rbind(consol_centroids,system_centroids)
+all_centroids = all_centroids[order(all_centroids$PWSID),]
+all_centroids = all_centroids[!st_is_empty(all_centroids),]
+
+need_location = master_system[!PWSID %in% all_centroids$PWSID,]
+require(ggmap)
+sub_system = master_system[PWSID %in% all_centroids$PWSID,]
+all_centroids = all_centroids[all_centroids$PWSID %in% sub_system$PWSID,]
+centroid_distance = sf::st_distance(all_centroids)
+```
+
+
+*ABSTRACT*
+TBD
+
+*INTRODUCTION*
+
+Local drinking water utilities have a challenging mandate: water users need safe and reliable drinking water access--that is also affordable. Water utilities are hyper-localized, often serving specific small communities or neighborhoods (Mullin 2010). Local providers fund operations, maintenance, and new construction through user fees and property taxes. Thus, the financial capacity of local providers to build and maintain water infrastructure varies by the economic capacity of the service population (Scott et al. 2018). Small water utilities in general have greater difficulty accessing credit markets and supporting infrastructure costs (Simonson et al. 2002, Teernstra 1993). System disparities are compounded by the fact that low socio-economic status (SES) communities with high non-white populations significantly lag in Safe Drinking Water Act compliance (Switzer et al. 2017) and access to skilled technical labor necessary for system operations (Teodoro and Switzer 2016)--meaning that communities that have the worst water access tend to also be the least able to make improvements.
+
+Federal and state authorities continue to push for system consolidation as a way to achieve better economies of scale and alleviate the capacity problems that small systems face (Porter et al. 2020). From a broad economic perspective, consolidation is typically a slam dunk. Larger service providers have better access to credit (Simonson et al. 2002, Teernstra 1993), better ability to comply with environmental regulations (Teodoro and Switzer 2016, Weiland 1998), reduced monitoring costs (CA water board), and more purchasing power (CA water board). However, motivating consolidators and consolidatees is a challenge (Porter et al. 2020). Many federal and state authorities provide incentives for systems to consolidate (e.g., in California, large systems that consolidate a small, disadvantaged system are eligible for a $10M zero interest loan to be used for any infrastructure project) (CITE WATER BOARD AND EPA WEBSITES). Financial incentives do not address local communities' concerns about loss of autonomy and representation--or the inescapable racial dynamics underlying urban sorting and metropolitan fragmentation, wherein white, wealthy communities procure separate public services (Burns 1994, Trounstine 2018) and resist consolidation with minority communities (CITE EXAMPLES). Understanding these dynamics is key to explaining the political economy of consolidation that extends beyond the economic logics of service provision and transaction costs.
+
+In this paper, we take advantage of a combination of datasets pertaining to water utilities in the state of California to model economic, social, and political drivers of consolidation. Using comprehensive risk metrics developed by the state water board reflecting each system's unique economic and environmental risks, we are able to control for each system's baseline incentive to consolidate. We then use an exponential random graph model (ERGM) to model consolidation partnership selections as a function of these risks, system SES attributes, geographic proximity to potential partners, and heterogeneity between potential partners (e.g., difference in Hispanic population %). Modeling consolidations from 2016 through 2020, we show that... This has the following implications for the design and implementation of consolidation incentive programs... And teaches public administration scholars that....
+
+
+*RATIONALE*
+
+Consolidation is a major topic in local public management. Cities and counties consolidate. Cities annex special districts. In the context of drinking water and wastewater services, consolidation is when two utilities join together. Porter et al. (2018) identify two general types of water utility consolidation: (1) managerial consolidation, wherein two entities combine administrative functions but maintain physically separate systems; (2) physical consolidation, wherein two entities physicall join systems. In other cases, utilities might enter into regional partnerships or mutual aid agreements to share resources or coordinate without formally combining--in this paper, we focus specifically on consolidation.
+
+Benefits of consolidation...
+Drawbacks of consolidation...
+
+Hypotheses:
+Great disparity in racial composition decreased probability of consolidation
+- next hypothesis
+- next hypothesis
+
+
+*BACKGROUND*
+
+Empirical data on consolidation... 
+Consolidation policies by EPA, CA, etc...
+Physical and managerial consolidation...
+Mandatory consolidation... (need to mention,but we aren't interested in this per se)
+
+
+*METHODS AND MATERIALS*
+
+```{r, message = F, warnings = F,include = F}
+#make network
+community_net = network.initialize(n = nrow(all_centroids),directed = T,bipartite = F,loops = F,multiple = F,hyper = F)
+network.vertex.names(community_net) <- sort(all_centroids$PWSID)
+
+sub_system$`Service Connections Count`[is.na(sub_system$`Service Connections Count`)]<-1
+sub_system$`PWS Type`[is.na(sub_system$`PWS Type`)] <- 'Missing'
+
+
+#index database by vertex names and select subset of variables
+add_to_network = sub_system[match(network.vertex.names(community_net),sub_system$PWSID),.(COUNTY,WATER_SYSTEM_NAME,SERVICE_CONNECTIONS,`PWS Type`,FEDERAL_CLASSIFICATION,STATE_CLASSIFICATION,POPULATION,OWNER_TYPE_CODE,ACTIVITY_STATUS_CD,`Service Connections Count`)]
+#add subset of variables to network
+set.vertex.attribute(community_net,value = add_to_network,attrname = names(add_to_network))
+
+consol_dt = consol_dt[!is.na(receiving_system_id),]
+keep_consol = consol_dt[consol_dt$receiving_system_id %in% sub_system$PWSID & consol_dt$PWSID %in% sub_system$PWSID,]
+
+add.edges(community_net,tail = match(keep_consol$PWSID,network.vertex.names(community_net)),head = match(keep_consol$receiving_system_id,network.vertex.names(community_net)),names.eval = 'Consolidation')
+```
+
+
+**Data**
+Describe the three datasets (CA systems, CA consolidations, CA risk)
+Data summary
+- map of systems [placeholder]
+```{r}
+require(ggthemes)
+ggplot() + geom_sf(data = consol_geo)
+states = tigris::states(cb = T,year = 2018)
+community_bounds$CONSOL<- community_bounds$SABL_PWSID %in% str_remove_all(consol_dt$attributes.system_id,'\\s')
+ggplot() + geom_sf(data = states[states$NAME=='California',])+
+  geom_sf(data = st_centroid(community_bounds[!community_bounds$SABL_PWSID %in% consol_geo$system_id,]),
+          aes(colour = 'active system'),pch = 19,alpha =0.5) + 
+  geom_sf(data = consol_geo,pch = 19,aes(colour = 'consolidated, 2016-2020')) + scale_color_manual(values = c('black','blue')) + 
+theme_map() + ggtitle('CA water systems') + theme(legend.title = element_blank(),text = element_text(size = 12)) + 
+NULL
+```
+
+- table of descriptive statistics 
+ - system attributes 
+ - # and type of consolidations
+
+
+Model inputs - how we operationalize terms
+
+**Model**
+BTERGM to model partnerships over time
+- ERGM background, how BTERGM works
+- structural 1s for mandatory consolidation
+
+```{r, include = F}
+library(units)
+dist_mat = drop_units(centroid_distance)
+dist_mat_ln = log(dist_mat)
+dist_mat_ln[dist_mat_ln==-Inf] <- 0
+
+mod0 = ergm(community_net ~ edges + nodefactor('PWS Type') + nodecov('Service Connections Count') + absdiff('Service Connections Count') + edgecov(dist_mat_ln))
+
+
+```
+
+
+**Identification strategy**
+observational data - conditioned on observables
+we control for proximity, and comprehensive system risks that form baseline landscape of consolidation (i.e., how much does each system need consolidation, and how close are the consolidation opportunites)
+Additional advantage of the dyadic, graph modeling approach is that we can likewise control of partner attributes (i.e., how big, or finanically healthy, is the potential partner). 
+
+
+*RESULTS*
+
+*DISCUSSION*
+
+*CONCLUSION*
+
+*APPENDIX*
+Model GOF
+specification tests
+
+
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+# References

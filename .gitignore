@@ -1,0 +1,22 @@
+
+# Un-ignore all of subtree
+!/code/
+!.gitignore
+
+/deliverables/
+/input/
+/scratch/
+/output/
+
+.DS_Store
+*.pper
+.Rproj.user*
+
+.Rproj.user
+
+*.Rout
+*/*.Rout
+
+.DS_Store
+
+
